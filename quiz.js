@@ -5,8 +5,7 @@ const setUpDB = require('./set-up-db');
 const { capitalize, languagePairs } = require('./language-config');
 
 const STREAK_INTERVAL = 5;
-// likely don't need this:
-const MAX_WORDS = 5;
+const BATCH_SIZE = 30;
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -85,16 +84,25 @@ const archiveTerm = (term) => {
     return nSQL("terms").query("upsert", clone).where(['id','=',term.id]).exec();
 };
 
+const compareTerms = (answer, termToMatch) => {
+    const parts = termToMatch.self.match(/([a-zÀ-ÿ\- ]+[a-zÀ-ÿ])(\ [\[\]a-zÀ-ÿ\- ]+)?/i);
+    const required = parts[1];
+    const optional = parts[2]
+        ? `(${parts[2]})?`
+        : '';
+
+    const matcher = new RegExp(required + optional);
+
+    return matcher.test(answer.trim().toLowerCase());
+};
+
 const quiz = (term, translations) => {
     return new Promise((resolve, reject) => {
         // let timeout = setTimeout(reject, 25);
         rl.question(`${term.self}${term.part ? ' [' + term.part + '] ' : ''}${term.sense}\n`, (answer) => {
             // clearTimeout(timeout);
-            answer = answer.trim().toLowerCase();
-            if (translations.find((trans) => {
-                // TODO: strip [qqch], etc
-                return trans.self === answer;
-            })) {
+            const finder = compareTerms.bind(compareTerms, answer);
+            if (translations.find(finder)) {
                 term.streak += 1;
                 console.log(`Correct! ${term.streak} in a row for this word!`);
                 if (term.streak > 0 && term.streak % STREAK_INTERVAL === 0) {
@@ -121,7 +129,7 @@ const quizGenerator = async function*(terms, toLang) {
 
 const suggestRepeat = () => {
     return new Promise((resolve, reject) => {
-        rl.question('No more words. Repeat? [Y/n] ', (answer) => {
+        rl.question('Keep going? [Y/n] ', (answer) => {
             return resolve(answer.toLowerCase() !== 'n');
         });
     });
@@ -130,12 +138,16 @@ const suggestRepeat = () => {
 
 // TODO: generator/async iterator
 const startQuiz = async ([fromLang, toLang]) => {
-    const terms = await getTermsForLanguage(fromLang.wordRefCode, MAX_WORDS); 
+    const terms = await getTermsForLanguage(fromLang.wordRefCode, BATCH_SIZE);
     for await (const [term, translations] of quizGenerator(terms, toLang.wordRefCode)) {
-        try {
-            await quiz(term, translations);
-        } catch(err) {
-            console.error(err);
+        if (translations.length) {
+            try {
+                await quiz(term, translations);
+            } catch(err) {
+                console.error(err);
+            }
+        } else {
+            continue;
         }
     }
 
